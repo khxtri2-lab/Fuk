@@ -1,0 +1,9 @@
+pyTelegramBotAPI
+requests
+httpx
+user_agent
+beautifulsoup4
+colorama
+urllib3
+certifi
+psutil
