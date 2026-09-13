@@ -54,6 +54,20 @@ user_data_lock = threading.Lock()
 user_data = {}
 pending_broadcast = {}
 
+SMALL_CAPS_TRANSLATION = str.maketrans({
+    "ᴀ": "a", "ʙ": "b", "ᴄ": "c", "ᴅ": "d", "ᴇ": "e",
+    "ꜰ": "f", "ɢ": "g", "ʜ": "h", "ɪ": "i", "ᴊ": "j",
+    "ᴋ": "k", "ʟ": "l", "ᴍ": "m", "ɴ": "n", "ᴏ": "o",
+    "ᴘ": "p", "ǫ": "q", "ʀ": "r", "ꜱ": "s", "ᴛ": "t",
+    "ᴜ": "u", "ᴠ": "v", "ᴡ": "w", "ʏ": "y", "ᴢ": "z",
+})
+
+def normalized_button_text(message):
+    """Normalize premium-font button labels before matching them."""
+    text = unicodedata.normalize("NFKC", message.text or "")
+    text = text.translate(SMALL_CAPS_TRANSLATION)
+    return " ".join(text.split()).casefold()
+
 def load_user_data():
     global user_data
     try:
@@ -205,6 +219,9 @@ class UserSession:
         self.installed_packages = []
         self.awaiting_input = False
         self.input_prompt = ""
+        self.input_history = []
+        self.last_exit_code = None
+        self.is_replaying_inputs = False
         self.files = []
         self.lock = threading.Lock()
     def add_log(self, msg):
@@ -437,11 +454,11 @@ def reject_file(call):
 def admin_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        KeyboardButton("➕ 𝑨𝑫𝑫 𝑪𝑹𝑬𝑫𝑰𝑻𝑺"),
-        KeyboardButton("➖ 𝑹𝑬𝑴𝑶𝑽𝑬 𝑪𝑹𝑬𝑫𝑰𝑻𝑺"),
-        KeyboardButton("📢 𝑩𝑹𝑶𝑨𝑫𝑪𝑨𝑺𝑻"),
-        KeyboardButton("👥 𝑼𝑺𝑬𝑹𝑺"),
-        KeyboardButton("🔙 𝑴𝑨𝑰𝑵 𝑴𝑬𝑵𝑼"),
+        KeyboardButton("➕ 𝑨ᴅᴅ 𝑪ʀᴇᴅɪᴛs"),
+        KeyboardButton("➖ 𝑹ᴇᴍᴏᴠᴇ 𝑪ʀᴇᴅɪᴛs"),
+        KeyboardButton("📢 𝑩ʀᴏᴀᴅᴄᴀsᴛ"),
+        KeyboardButton("👥 𝑼sᴇʀs"),
+        KeyboardButton("🔙 𝑴ᴀɪɴ 𝑴ᴇɴᴜ"),
     )
     return markup
 
@@ -469,11 +486,11 @@ def admin_panel_message(message):
 def admin_command(message):
     admin_panel_message(message)
 
-@bot.message_handler(func=lambda msg: msg.text == "🛠  𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("admin panel"))
 def admin_panel_button(message):
     admin_panel_message(message)
 
-@bot.message_handler(func=lambda msg: msg.text == "🔙 𝑴𝑨𝑰𝑵 𝑴𝑬𝑵𝑼")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("main menu"))
 def back_to_main_menu(message):
     if not admin_only(message):
         return
@@ -492,11 +509,11 @@ def credit_change_prompt(message, operation):
     )
     bot.register_next_step_handler(prompt, process_credit_change, operation)
 
-@bot.message_handler(func=lambda msg: msg.text == "➕ 𝑨𝑫𝑫 𝑪𝑹𝑬𝑫𝑰𝑻𝑺")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("add credits"))
 def add_credits_button(message):
     credit_change_prompt(message, "add")
 
-@bot.message_handler(func=lambda msg: msg.text == "➖ 𝑹𝑬𝑴𝑶𝑽𝑬 𝑪𝑹𝑬𝑫𝑰𝑻𝑺")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("remove credits"))
 def remove_credits_button(message):
     credit_change_prompt(message, "remove")
 
@@ -570,7 +587,7 @@ def users_report():
         lines.append("No users have started the bot yet.")
     return "\n".join(lines)
 
-@bot.message_handler(func=lambda msg: msg.text == "👥 𝑼𝑺𝑬𝑹𝑺")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("users"))
 def show_users(message):
     if not admin_only(message):
         return
@@ -595,7 +612,7 @@ def broadcast_prompt(message):
 def broadcast_command(message):
     broadcast_prompt(message)
 
-@bot.message_handler(func=lambda msg: msg.text == "📢 𝑩𝑹𝑶𝑨𝑫𝑪𝑨𝑺𝑻")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("broadcast"))
 def broadcast_button(message):
     broadcast_prompt(message)
 
@@ -662,24 +679,25 @@ def main_menu(chat_id=None):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     # Telegram does not support custom button colors, so colored emoji
     # markers are used to make every button visually distinct.
-    btn1 = KeyboardButton("🟦  𝑼𝑷𝑳𝑶𝑨𝑫 𝑭𝑰𝑳𝑬")
-    btn2 = KeyboardButton("🟢  𝑹𝑼𝑵 𝑭𝑰𝑳𝑬")
-    btn3 = KeyboardButton("⏹️  𝑺𝑻𝑶𝑷 𝑭𝑰𝑳𝑬")
-    btn4 = KeyboardButton("🟡  𝑽𝑰𝑬𝑾 𝑳𝑶𝑮𝑺")
-    btn5 = KeyboardButton("🟣  𝑳𝑰𝑽𝑬 𝑺𝑻𝑨𝑻𝑼𝑺")
-    btn6 = KeyboardButton("🟠 ⚡ 𝑺𝑷𝑬𝑬𝑫")
-    btn7 = KeyboardButton("🟤  INSTALL PIP")
-    btn8 = KeyboardButton("📁  MY FILES")
-    btn9 = KeyboardButton("✏️  SEND INPUT")
-    btn10 = KeyboardButton("⚫  𝑫𝑬𝑽")
-    btn11 = KeyboardButton("💳  𝑴𝒀 𝑪𝑹𝑬𝑫𝑰𝑻𝑺")
-    markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8, btn9, btn10, btn11)
+    btn1 = KeyboardButton("🟦 𝑼ᴘʟᴏᴀᴅ 𝑭ɪʟᴇ")
+    btn2 = KeyboardButton("🟢 𝑹ᴜɴ 𝑭ɪʟᴇ")
+    btn3 = KeyboardButton("⏹️ 𝑺ᴛᴏᴘ 𝑭ɪʟᴇ")
+    btn4 = KeyboardButton("🟡 𝑽ɪᴇᴡ 𝑳ᴏɢs")
+    btn5 = KeyboardButton("🟣 𝑳ɪᴠᴇ 𝑺ᴛᴀᴛᴜs")
+    btn6 = KeyboardButton("🟠 ⚡ 𝑺ᴘᴇᴇᴅ")
+    btn7 = KeyboardButton("🟤 𝑰ɴsᴛᴀʟʟ 𝑷ɪᴘ")
+    btn8 = KeyboardButton("📁 𝑴ʏ 𝑭ɪʟᴇs")
+    btn9 = KeyboardButton("✏️ 𝑺ᴇɴᴅ 𝑰ɴᴘᴜᴛ")
+    btn10 = KeyboardButton("⚫ 𝑫ᴇᴠ")
+    btn11 = KeyboardButton("💳 𝑴ʏ 𝑪ʀᴇᴅɪᴛs")
+    btn12 = KeyboardButton("🔄 𝑹ᴇsᴛᴀʀᴛ 𝑭ɪʟᴇ")
+    markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8, btn9, btn10, btn11, btn12)
     if chat_id is not None and is_admin(chat_id):
-        markup.add(KeyboardButton("🛠  𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳"))
+        markup.add(KeyboardButton("🛠 𝑨ᴅᴍɪɴ 𝑷ᴀɴᴇʟ"))
     return markup
 
 @bot.message_handler(commands=["credits"])
-@bot.message_handler(func=lambda msg: msg.text == "💳  𝑴𝒀 𝑪𝑹𝑬𝑫𝑰𝑻𝑺")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("my credits"))
 def show_credits(message):
     ensure_user_record(message.chat.id, getattr(message, "from_user", None))
     bot.reply_to(message, credits_text(message.chat.id), parse_mode="Markdown")
@@ -711,7 +729,7 @@ def send_welcome(message):
 # ============================================================
 #  UPLOAD FILE
 # ============================================================
-@bot.message_handler(func=lambda msg: msg.text == "🟦  𝑼𝑷𝑳𝑶𝑨𝑫 𝑭𝑰𝑳𝑬")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("upload file"))
 def upload_file(message):
     if not require_access(message):
         return
@@ -726,11 +744,6 @@ def upload_file(message):
 # ============================================================
 #  MY FILES
 # ============================================================
-def normalized_button_text(message):
-    """Make ReplyKeyboard labels tolerant of emoji, fonts, and spaces."""
-    text = unicodedata.normalize("NFKC", message.text or "")
-    return " ".join(text.split()).casefold()
-
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("my files"))
 def show_my_files(message):
     chat_id = message.chat.id
@@ -1001,8 +1014,59 @@ def handle_file_upload(message):
 # ============================================================
 #  RUN FILE
 # ============================================================
-@bot.message_handler(func=lambda msg: msg.text == "🟢  𝑹𝑼𝑵 𝑭𝑰𝑳𝑬")
-def run_file(message):
+def replay_saved_inputs(session, saved_inputs):
+    """Replay the values collected during the previous run."""
+    if not saved_inputs or not session.process or session.process.stdin is None:
+        return
+
+    def replay_worker():
+        session.is_replaying_inputs = True
+        try:
+            # Give the child process time to start and reach its first input().
+            time.sleep(0.4)
+            for index, value in enumerate(saved_inputs, start=1):
+                if not session.is_running or session.process.poll() is not None:
+                    break
+                try:
+                    session.process.stdin.write(value + "\n")
+                    session.process.stdin.flush()
+                    session.add_log(f" Replayed saved input {index}")
+                    time.sleep(0.15)
+                except (BrokenPipeError, OSError, ValueError) as exc:
+                    session.add_log(f"⚠️ Could not replay input {index}: {exc}")
+                    break
+        finally:
+            session.is_replaying_inputs = False
+
+    threading.Thread(target=replay_worker, daemon=True).start()
+
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("restart file"))
+def restart_file(message):
+    if not require_access(message, activate=False):
+        return
+    with lock:
+        session = user_sessions.get(message.chat.id)
+    if not session or not session.file_path:
+        bot.reply_to(
+            message,
+            "⚠️ **No file is available to restart.**\n\nSelect an uploaded file first.",
+            parse_mode="Markdown",
+        )
+        return
+    if session.is_running:
+        bot.reply_to(message, "⚠️ **File is still running.** Stop it before restarting.", parse_mode="Markdown")
+        return
+    saved_count = len(session.input_history)
+    notice = (
+        f"🔄 **Restarting file...**\nSaved inputs to replay: `{saved_count}`"
+        if saved_count
+        else "🔄 **Restarting file...**\nNo saved inputs found; starting fresh."
+    )
+    bot.reply_to(message, notice, parse_mode="Markdown")
+    run_file(message, replay_inputs=True)
+
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("run file"))
+def run_file(message, replay_inputs=False):
     if not require_access(message):
         return
     chat_id = message.chat.id
@@ -1020,6 +1084,10 @@ def run_file(message):
         session.add_log("❌ No file found! Upload a .py file.")
         bot.reply_to(message, "❌ **No file found!**\n\n Upload a .py file first.", parse_mode='Markdown')
         return
+    saved_inputs = list(session.input_history) if replay_inputs else []
+    if not replay_inputs:
+        session.input_history = []
+    session.last_exit_code = None
     try:
         session.process = subprocess.Popen(
             # -u makes Python child scripts flush output immediately.
@@ -1035,6 +1103,7 @@ def run_file(message):
         session.end_time = None
         session.total_checks = 0
         session.speed = 0
+        session.is_replaying_inputs = bool(saved_inputs)
         session.add_log(f" File started: {os.path.basename(session.file_path)}")
         def read_logs():
             # Read one byte at a time so prompts from input("...") are
@@ -1069,6 +1138,7 @@ def run_file(message):
                             prompt
                             and not prompt_sent
                             and session.process.poll() is None
+                            and not session.is_replaying_inputs
                             and looks_like_input_prompt(prompt)
                         ):
                             ask_user_for_process_input(session, prompt)
@@ -1086,12 +1156,15 @@ def run_file(message):
             session.awaiting_input = False
             session.input_prompt = ""
             session.is_running = False
+            session.is_replaying_inputs = False
             session.end_time = datetime.now()
+            session.last_exit_code = return_code
             if return_code == 0:
                 session.add_log("✅ File finished")
             elif return_code is not None:
                 session.add_log(f"⚠️ File exited with code {return_code}")
         threading.Thread(target=read_logs, daemon=True).start()
+        replay_saved_inputs(session, saved_inputs)
         bot.reply_to(message, f"✅ **File started!**\n `{os.path.basename(session.file_path)}`\n\n Click **VIEW LOGS** to see output.\n Click **LIVE STATUS** to check progress.", parse_mode='Markdown')
     except Exception as e:
         session.is_running = False
@@ -1126,7 +1199,7 @@ def stop_file(message):
 # ============================================================
 #  VIEW LOGS
 # ============================================================
-@bot.message_handler(func=lambda msg: msg.text == "🟡  𝑽𝑰𝑬𝑾 𝑳𝑶𝑮𝑺")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("view logs"))
 def view_logs(message):
     chat_id = message.chat.id
     with lock:
@@ -1142,7 +1215,7 @@ def view_logs(message):
 # ============================================================
 #  LIVE STATUS (Fixed — Proper Working)
 # ============================================================
-@bot.message_handler(func=lambda msg: msg.text == "🟣  𝑳𝑰𝑽𝑬 𝑺𝑻𝑨𝑻𝑼𝑺")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("live status"))
 def show_live_status(message):
     chat_id = message.chat.id
     with lock:
@@ -1178,7 +1251,7 @@ def show_live_status(message):
 # ============================================================
 # ⚡ SPEED (Fixed — Proper Working)
 # ============================================================
-@bot.message_handler(func=lambda msg: msg.text == "🟠 ⚡ 𝑺𝑷𝑬𝑬𝑫")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("speed"))
 def show_speed(message):
     chat_id = message.chat.id
     with lock:
@@ -1250,6 +1323,7 @@ def send_process_input(message):
             raise RuntimeError("stdin pipe is not available")
         session.process.stdin.write(value + "\n")
         session.process.stdin.flush()
+        session.input_history.append(value)
         session.awaiting_input = False
         session.input_prompt = ""
         session.add_log(" Input sent from Telegram")
@@ -1264,7 +1338,7 @@ def send_process_input(message):
 # ============================================================
 #  DEV
 # ============================================================
-@bot.message_handler(func=lambda msg: msg.text == "⚫  𝑫𝑬𝑽")
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("dev"))
 def show_dev(message):
     markup = InlineKeyboardMarkup()
     btn1 = InlineKeyboardButton("👨‍💻 @SunrakuV2", url="https://t.me/SunrakuV2")
@@ -1286,4 +1360,3 @@ while True:
         print(f"⚠️ Polling error: {e}")
         time.sleep(5)
         continue
-
