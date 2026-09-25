@@ -9,6 +9,7 @@
 - LIVE STATUS + SPEED FIXED
 - Default file (fast hits) bhi available
 - 🔥 PROXY SUPPORT ADDED
+- 🔥 AUTO COLOR STRIP (user file se colors hataye)
 - Dev: @SunrakuV2 | Channel: @Anishpy | @VOUCH_R
 """
 import os
@@ -39,6 +40,21 @@ if not BOT_TOKEN:
 bot = TeleBot(BOT_TOKEN)
 
 # ============================================================
+# 🔥 ANSI COLOR STRIPPER
+# ============================================================
+ANSI_ESCAPE_RE = re.compile(
+    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
+)
+
+
+def strip_ansi(text):
+    """Remove all ANSI escape codes from text."""
+    if not text:
+        return text
+    return ANSI_ESCAPE_RE.sub("", str(text))
+
+
+# ============================================================
 # 🔥 PROXY MANAGER
 # ============================================================
 PROXIES_FILE = "proxies.txt"
@@ -51,7 +67,6 @@ def load_proxies():
     global _proxy_list
     proxies = []
     
-    # First: try environment variable
     env_proxies = os.environ.get("PROXIES", "").strip()
     if env_proxies:
         for p in env_proxies.split(","):
@@ -59,7 +74,6 @@ def load_proxies():
             if p:
                 proxies.append(p)
     
-    # Second: try file
     if not proxies:
         try:
             if os.path.exists(PROXIES_FILE):
@@ -86,16 +100,15 @@ def get_proxy():
 
 
 def normalize_proxy(p):
-    """Normalize proxy string to http://user:pass@ip:port format."""
+    """Normalize proxy string to URL format."""
     if not p:
         return None
     p = p.strip()
-    if p.startswith(("http://", "https://", "socks5://")):
+    if p.startswith(("http://", "https://", "socks4://", "socks5://")):
         return p
     if "@" in p:
         return f"http://{p}"
     if p.count(":") == 3:
-        # ip:port:user:pass
         parts = p.split(":")
         ip, port, user, pwd = parts[0], parts[1], parts[2], parts[3]
         return f"http://{user}:{pwd}@{ip}:{port}"
@@ -104,27 +117,26 @@ def normalize_proxy(p):
     return f"http://{p}"
 
 
-# Initial load
 load_proxies()
 
 
 # ============================================================
-# 🔥 PROXY INJECTOR — User ki file mein proxy code inject kare
+# 🔥 PROXY INJECTOR
 # ============================================================
 PROXY_INJECT_CODE = '''
 # 🔥 AUTO-INJECTED PROXY — DO NOT REMOVE
-import os as _os
-import random as _random
+import os as _os_proxy
+import random as _random_proxy
 try:
-    _PROXY_STR = _os.environ.get("HTTP_PROXY", "")
+    _PROXY_STR = _os_proxy.environ.get("HTTP_PROXY", "")
     if _PROXY_STR:
         _PROXY_DICT = {"http": _PROXY_STR, "https": _PROXY_STR}
         try:
-            import requests as _req
-            _orig_get = _req.get
-            _orig_post = _req.post
-            _req.get = lambda *a, **kw: _orig_get(*a, proxies=kw.pop("proxies", _PROXY_DICT), **kw)
-            _req.post = lambda *a, **kw: _orig_post(*a, proxies=kw.pop("proxies", _PROXY_DICT), **kw)
+            import requests as _req_proxy
+            _orig_get_p = _req_proxy.get
+            _orig_post_p = _req_proxy.post
+            _req_proxy.get = lambda *a, **kw: _orig_get_p(*a, proxies=kw.pop("proxies", _PROXY_DICT), **kw)
+            _req_proxy.post = lambda *a, **kw: _orig_post_p(*a, proxies=kw.pop("proxies", _PROXY_DICT), **kw)
         except ImportError:
             pass
 except Exception:
@@ -133,17 +145,38 @@ except Exception:
 '''
 
 
+# ============================================================
+# 🔥 COLOR STRIP INJECTOR
+# ============================================================
+STRIP_COLOR_CODE = '''
+# 🔥 AUTO-STRIP ANSI COLORS — DO NOT REMOVE
+import re as _re_color
+import builtins as _builtins_color
+
+_ANSI_PATTERN = _re_color.compile(r"\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])")
+_orig_print_color = _builtins_color.print
+
+def _clean_print(*args, **kwargs):
+    cleaned = tuple(_ANSI_PATTERN.sub("", str(a)) for a in args)
+    _orig_print_color(*cleaned, **kwargs)
+
+_builtins_color.print = _clean_print
+# END AUTO-STRIP
+'''
+
+
 def inject_proxy_into_file(file_path):
-    """Inject proxy env reading into user file at top."""
+    """Inject proxy + color strip into user file."""
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
         
-        # Already injected?
-        if "AUTO-INJECTED PROXY" in content:
+        need_proxy = "AUTO-INJECTED PROXY" not in content
+        need_strip = "AUTO-STRIP ANSI COLORS" not in content
+        
+        if not need_proxy and not need_strip:
             return True
         
-        # Find first non-shebang, non-comment, non-docstring line
         lines = content.split("\n")
         insert_at = 0
         in_docstring = False
@@ -153,18 +186,14 @@ def inject_proxy_into_file(file_path):
             stripped = line.strip()
             if not stripped:
                 continue
-            # Skip shebang
             if stripped.startswith("#!"):
                 continue
-            # Skip single-line comments
             if stripped.startswith("#"):
                 continue
-            # Skip docstrings
             if not in_docstring:
                 if stripped.startswith('"""') or stripped.startswith("'''"):
                     docstring_char = stripped[:3]
                     if stripped.count(docstring_char) >= 2:
-                        # Single-line docstring
                         continue
                     in_docstring = True
                     continue
@@ -172,18 +201,30 @@ def inject_proxy_into_file(file_path):
                 if docstring_char and docstring_char in stripped:
                     in_docstring = False
                 continue
-            # Found first real code line
             insert_at = i
             break
         
-        new_content = "\n".join(lines[:insert_at]) + "\n" + PROXY_INJECT_CODE + "\n" + "\n".join(lines[insert_at:])
+        blocks = []
+        if need_proxy:
+            blocks.append(PROXY_INJECT_CODE)
+        if need_strip:
+            blocks.append(STRIP_COLOR_CODE)
+        
+        combined = "\n".join(blocks)
+        new_content = (
+            "\n".join(lines[:insert_at])
+            + "\n"
+            + combined
+            + "\n"
+            + "\n".join(lines[insert_at:])
+        )
         
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(new_content)
         
         return True
     except Exception as e:
-        print(f"⚠️ Proxy inject error: {e}")
+        print(f"⚠️ Inject error: {e}")
         return False
 
 
@@ -195,7 +236,6 @@ lock = threading.Lock()
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Owner Chat ID (Approval ke liye)
 OWNER_CHAT_ID = 8641613327
 
 # ============================================================
@@ -217,7 +257,6 @@ SMALL_CAPS_TRANSLATION = str.maketrans({
 
 
 def normalized_button_text(message):
-    """Normalize premium-font button labels before matching them."""
     text = unicodedata.normalize("NFKC", message.text or "")
     text = text.translate(SMALL_CAPS_TRANSLATION)
     return " ".join(text.split()).casefold()
@@ -295,7 +334,6 @@ def access_status(chat_id):
 
 
 def activate_credit(chat_id):
-    """Use one credit only when the user first starts using the service."""
     if is_admin(chat_id):
         return True, "♾️ Admin access"
     with user_data_lock:
@@ -368,7 +406,7 @@ load_user_data()
 
 
 # ============================================================
-# 🔥 USER SESSION MANAGER
+# 🔥 USER SESSION
 # ============================================================
 class UserSession:
     def __init__(self, chat_id):
@@ -393,7 +431,8 @@ class UserSession:
 
     def add_log(self, msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.logs.append(f"[{timestamp}] {msg}")
+        clean_msg = strip_ansi(str(msg))
+        self.logs.append(f"[{timestamp}] {clean_msg}")
         if len(self.logs) > 200:
             self.logs.pop(0)
 
@@ -417,7 +456,6 @@ class UserSession:
         return self.speed or 0
 
 
-ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 INPUT_PROMPT_RE = re.compile(
     r"(chat\s*id|user\s*name|username|password|token|email|phone|"
     r"number|choice|select|option|proxy|path|file|url|key|code|"
@@ -427,7 +465,7 @@ INPUT_PROMPT_RE = re.compile(
 
 
 def clean_console_prompt(text):
-    text = ANSI_ESCAPE_RE.sub("", text)
+    text = strip_ansi(text)
     text = text.replace("\x00", "").strip()
     return text[-700:] if len(text) > 700 else text
 
@@ -447,10 +485,7 @@ def ask_user_for_process_input(session, prompt):
         full_log = session.get_logs(200)
         if not full_log:
             full_log = "No log output yet."
-        log_chunks = [
-            full_log[i:i + 3500]
-            for i in range(0, len(full_log), 3500)
-        ]
+        log_chunks = [full_log[i:i + 3500] for i in range(0, len(full_log), 3500)]
         for chunk_number, chunk in enumerate(log_chunks, start=1):
             header = " FULL FILE LOG"
             if len(log_chunks) > 1:
@@ -470,15 +505,8 @@ def ask_user_for_process_input(session, prompt):
 
 
 def add_file_to_session(session, file_path, file_name, approved=False):
-    session.files = [
-        entry for entry in session.files
-        if entry.get("path") != file_path
-    ]
-    session.files.append({
-        "path": file_path,
-        "name": file_name,
-        "approved": approved
-    })
+    session.files = [e for e in session.files if e.get("path") != file_path]
+    session.files.append({"path": file_path, "name": file_name, "approved": approved})
 
 
 def discover_user_files(session):
@@ -515,29 +543,16 @@ def file_manager_markup(session):
         approved = "✅" if entry.get("approved") else "⏳"
         label = f"{approved} {selected}{index + 1}. {entry.get('name', 'file')}"
         markup.add(
-            InlineKeyboardButton(
-                label[:60],
-                callback_data=f"select_file_{session.chat_id}_{index}"
-            ),
-            InlineKeyboardButton(
-                " DELETE",
-                callback_data=f"delete_file_{session.chat_id}_{index}"
-            )
+            InlineKeyboardButton(label[:60], callback_data=f"select_file_{session.chat_id}_{index}"),
+            InlineKeyboardButton(" DELETE", callback_data=f"delete_file_{session.chat_id}_{index}")
         )
     return markup
 
 
 def file_manager_text(session):
-    existing = [
-        entry for entry in session.files
-        if os.path.exists(entry.get("path", ""))
-    ]
+    existing = [e for e in session.files if os.path.exists(e.get("path", ""))]
     if not existing:
-        return (
-            " MY FILES\n\n"
-            "No uploaded files found.\n"
-            "Use UPLOAD FILE to add one."
-        )
+        return " MY FILES\n\nNo uploaded files found.\nUse UPLOAD FILE to add one."
     lines = [" MY FILES", "", "Tap a file button to select it:"]
     for index, entry in enumerate(session.files):
         if not os.path.exists(entry.get("path", "")):
@@ -551,7 +566,7 @@ def file_manager_text(session):
 
 
 # ============================================================
-# 🔥 APPROVAL SYSTEM
+# 🔥 APPROVAL
 # ============================================================
 def send_approval_request(user_chat_id, file_name, file_path):
     msg = f"""
@@ -562,14 +577,8 @@ def send_approval_request(user_chat_id, file_name, file_path):
  Click Approve to allow user to run this file.
 """
     markup = InlineKeyboardMarkup(row_width=2)
-    btn_approve = InlineKeyboardButton(
-        text="✅ APPROVE",
-        callback_data=f"approve_{user_chat_id}_{file_path}"
-    )
-    btn_reject = InlineKeyboardButton(
-        text="❌ REJECT",
-        callback_data=f"reject_{user_chat_id}"
-    )
+    btn_approve = InlineKeyboardButton(text="✅ APPROVE", callback_data=f"approve_{user_chat_id}_{file_path}")
+    btn_reject = InlineKeyboardButton(text="❌ REJECT", callback_data=f"reject_{user_chat_id}")
     markup.add(btn_approve, btn_reject)
     try:
         bot.send_message(OWNER_CHAT_ID, msg, reply_markup=markup, parse_mode='Markdown')
@@ -596,9 +605,7 @@ def approve_file(call):
         session.add_log("✅ File approved by owner")
     bot.edit_message_text(
         f"✅ **File Approved!**\n User: `{user_chat_id}`\n File: `{os.path.basename(file_path)}`\n\nUser can now run the file.",
-        call.message.chat.id,
-        call.message.message_id,
-        parse_mode='Markdown'
+        call.message.chat.id, call.message.message_id, parse_mode='Markdown'
     )
     try:
         bot.send_message(
@@ -624,9 +631,7 @@ def reject_file(call):
             session.add_log("❌ File rejected by owner")
     bot.edit_message_text(
         f"❌ **File Rejected!**\n User: `{user_chat_id}`\n\nFile has been rejected by owner.",
-        call.message.chat.id,
-        call.message.message_id,
-        parse_mode='Markdown'
+        call.message.chat.id, call.message.message_id, parse_mode='Markdown'
     )
     try:
         bot.send_message(
@@ -640,7 +645,7 @@ def reject_file(call):
 
 
 # ============================================================
-# 🔥 BOT MENUS
+# 🔥 ADMIN
 # ============================================================
 def admin_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -860,10 +865,7 @@ def broadcast_callback(call):
     sent = 0
     failed = 0
     with user_data_lock:
-        recipients = [
-            int(chat_id) for chat_id, record in user_data.items()
-            if not record.get("blocked")
-        ]
+        recipients = [int(chat_id) for chat_id, record in user_data.items() if not record.get("blocked")]
     for recipient in recipients:
         try:
             bot.send_message(recipient, f"📢 Announcement\n\n{text}")
@@ -872,9 +874,7 @@ def broadcast_callback(call):
             failed += 1
     bot.edit_message_text(
         f"✅ **Broadcast complete.**\n\nSent: `{sent}`\nFailed: `{failed}`",
-        call.message.chat.id,
-        call.message.message_id,
-        parse_mode="Markdown",
+        call.message.chat.id, call.message.message_id, parse_mode="Markdown"
     )
     bot.answer_callback_query(call.id, "Broadcast sent")
 
@@ -927,6 +927,7 @@ def send_welcome(message):
  𝑴𝒂𝒏𝒂𝒈𝒆 𝒚𝒐𝒖𝒓 𝒖𝒑𝒍𝒐𝒂𝒅𝒆𝒅 𝒇𝒊𝒍𝒆𝒔
  𝑺𝒆𝒏𝒅 𝒊𝒏𝒑𝒖𝒕 𝒕𝒐 𝒂 𝒓𝒖𝒏𝒏𝒊𝒏𝒈 𝒇𝒊𝒍𝒆 (𝒐𝒓 𝒖𝒔𝒆 /input)
  🔥 𝑷𝒓𝒐𝒙𝒚: 𝑨𝒖𝒕𝒐-𝒊𝒏𝒋𝒆𝒄𝒕𝒆𝒅
+ 🎨 𝑪𝒐𝒍𝒐𝒓𝒔: 𝑨𝒖𝒕𝒐-𝒔𝒕𝒓𝒊𝒑𝒑𝒆𝒅
  𝑫𝒆𝒗: @𝑺𝒖𝒏𝒓𝒂𝒌𝒖𝑽2
  𝑪𝒉𝒂𝒏𝒏𝒆𝒍: @𝑨𝒏𝒊𝒔𝒉𝒑𝒚 | @𝑽𝑶𝑼𝑪𝑯_𝑹
 """
@@ -961,11 +962,7 @@ def show_my_files(message):
             user_sessions[chat_id] = UserSession(chat_id)
         session = user_sessions[chat_id]
     discover_user_files(session)
-    bot.reply_to(
-        message,
-        file_manager_text(session),
-        reply_markup=file_manager_markup(session)
-    )
+    bot.reply_to(message, file_manager_text(session), reply_markup=file_manager_markup(session))
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("select_file_"))
@@ -1001,8 +998,7 @@ def select_user_file(call):
     bot.answer_callback_query(call.id, "✅ File selected.")
     bot.edit_message_text(
         file_manager_text(session),
-        call.message.chat.id,
-        call.message.message_id,
+        call.message.chat.id, call.message.message_id,
         reply_markup=file_manager_markup(session)
     )
 
@@ -1056,8 +1052,7 @@ def delete_user_file(call):
         bot.answer_callback_query(call.id, " File deleted.")
         bot.edit_message_text(
             file_manager_text(session),
-            call.message.chat.id,
-            call.message.message_id,
+            call.message.chat.id, call.message.message_id,
             reply_markup=file_manager_markup(session)
         )
     except OSError as e:
@@ -1130,40 +1125,23 @@ def install_pip_packages(message):
         )
         return
     package_list = " ".join(packages)
-    bot.reply_to(
-        message,
-        f"⏳ **Installing:** `{package_list}`\n\nPlease wait...",
-        parse_mode='Markdown'
-    )
+    bot.reply_to(message, f"⏳ **Installing:** `{package_list}`\n\nPlease wait...", parse_mode='Markdown')
+    
     def pip_worker():
         try:
             package_names = {
                 re.split(r"==|!=|~=|>=|<=|>|<", package, maxsplit=1)[0]
-                .split("[", 1)[0]
-                .lower()
+                .split("[", 1)[0].lower()
                 for package in packages
             }
             dependency_repair = bool(
-                package_names.intersection(
-                    {"anyio", "httpx", "httpcore", "python-telegram-bot"}
-                )
+                package_names.intersection({"anyio", "httpx", "httpcore", "python-telegram-bot"})
             )
-            pip_command = [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-            ]
+            pip_command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
             if dependency_repair:
                 pip_command.extend(["--upgrade", "--force-reinstall", "--no-cache-dir"])
             pip_command.extend(packages)
-            result = subprocess.run(
-                pip_command,
-                capture_output=True,
-                text=True,
-                timeout=180
-            )
+            result = subprocess.run(pip_command, capture_output=True, text=True, timeout=180)
             output = (result.stdout or "") + (result.stderr or "")
             output = output.strip() or "No output returned."
             if len(output) > 3500:
@@ -1180,6 +1158,7 @@ def install_pip_packages(message):
             bot.send_message(message.chat.id, "⏱️ Pip installation timed out after 180 seconds.")
         except Exception as e:
             bot.send_message(message.chat.id, f"❌ Pip error: {e}")
+    
     threading.Thread(target=pip_worker, daemon=True).start()
 
 
@@ -1210,18 +1189,9 @@ def handle_file_upload(message):
         with open(file_path, 'wb') as f:
             f.write(downloaded_file)
         session.file_path = file_path
-        add_file_to_session(
-            session,
-            file_path,
-            message.document.file_name,
-            approved=False
-        )
+        add_file_to_session(session, file_path, message.document.file_name, approved=False)
         session.add_log(f" File uploaded: {message.document.file_name}")
-        success = send_approval_request(
-            chat_id, 
-            message.document.file_name, 
-            file_path
-        )
+        success = send_approval_request(chat_id, message.document.file_name, file_path)
         if success:
             bot.reply_to(message, f"✅ **File uploaded successfully!**\n `{message.document.file_name}`\n\n⏳ **Waiting for owner approval...**\nYou will be notified when approved.", parse_mode='Markdown')
         else:
@@ -1231,7 +1201,7 @@ def handle_file_upload(message):
 
 
 # ============================================================
-# 🔥 RUN FILE (with PROXY INJECT)
+# 🔥 RUN FILE
 # ============================================================
 def replay_saved_inputs(session, saved_inputs):
     if not saved_inputs or not session.process or session.process.stdin is None:
@@ -1265,11 +1235,7 @@ def restart_file(message):
     with lock:
         session = user_sessions.get(message.chat.id)
     if not session or not session.file_path:
-        bot.reply_to(
-            message,
-            "⚠️ **No file is available to restart.**\n\nSelect an uploaded file first.",
-            parse_mode="Markdown",
-        )
+        bot.reply_to(message, "⚠️ **No file is available to restart.**\n\nSelect an uploaded file first.", parse_mode="Markdown")
         return
     if session.is_running:
         bot.reply_to(message, "⚠️ **File is still running.** Stop it before restarting.", parse_mode="Markdown")
@@ -1308,10 +1274,9 @@ def run_file(message, replay_inputs=False):
         session.input_history = []
     session.last_exit_code = None
     try:
-        # 🔥 INJECT PROXY INTO USER FILE
+        # 🔥 INJECT PROXY + COLOR STRIP
         inject_proxy_into_file(session.file_path)
         
-        # 🔥 PREPARE ENV WITH PROXY
         env = os.environ.copy()
         proxy = get_proxy()
         if proxy:
@@ -1331,7 +1296,7 @@ def run_file(message, replay_inputs=False):
             stdin=subprocess.PIPE,
             text=True,
             bufsize=1,
-            env=env  # 🔥 Pass env with proxy
+            env=env
         )
         session.is_running = True
         session.start_time = datetime.now()
@@ -1361,8 +1326,10 @@ def run_file(message, replay_inputs=False):
                             line, partial_output = partial_output.split("\n", 1)
                             line = line.rstrip("\r")
                             if line.strip():
-                                session.add_log(line.strip())
-                                session.total_checks += 1
+                                clean_line = strip_ansi(line).strip()
+                                if clean_line:
+                                    session.add_log(clean_line)
+                                    session.total_checks += 1
                     else:
                         prompt = clean_console_prompt(partial_output)
                         if (
@@ -1397,7 +1364,7 @@ def run_file(message, replay_inputs=False):
         
         threading.Thread(target=read_logs, daemon=True).start()
         replay_saved_inputs(session, saved_inputs)
-        bot.reply_to(message, f"✅ **File started!**\n `{os.path.basename(session.file_path)}`\n\n🌐 **Proxy:** Active\n Click **VIEW LOGS** to see output.\n Click **LIVE STATUS** to check progress.", parse_mode='Markdown')
+        bot.reply_to(message, f"✅ **File started!**\n `{os.path.basename(session.file_path)}`\n\n🌐 **Proxy:** Active\n🎨 **Colors:** Auto-stripped\n\n Click **VIEW LOGS** to see output.\n Click **LIVE STATUS** to check progress.", parse_mode='Markdown')
     except Exception as e:
         session.is_running = False
         session.add_log(f"❌ Run error: {str(e)}")
@@ -1533,11 +1500,7 @@ def request_process_input(message):
     with lock:
         session = user_sessions.get(chat_id)
     if not session or not session.process or not session.is_running:
-        bot.reply_to(
-            message,
-            "⚠️ **No running file is waiting for input.**",
-            parse_mode='Markdown'
-        )
+        bot.reply_to(message, "⚠️ **No running file is waiting for input.**", parse_mode='Markdown')
         return
     prompt = bot.reply_to(
         message,
@@ -1595,7 +1558,7 @@ def show_dev(message):
 
 
 # ============================================================
-# 🔥 FLASK KEEP-ALIVE (Render Port Fix)
+# 🔥 FLASK KEEP-ALIVE
 # ============================================================
 app = Flask('')
 
