@@ -1360,3 +1360,40 @@ while True:
         print(f"⚠️ Polling error: {e}")
         time.sleep(5)
         continue
+# ============================================================
+#  FLASK KEEP-ALIVE (Render Port Fix)
+# ============================================================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "✅ Bot is alive!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+    print("✅ Flask Keep-Alive Started on port", os.environ.get("PORT", 10000))
+
+# ============================================================
+#  START BOT
+# ============================================================
+if __name__ == "__main__":
+    keep_alive()  # 🔥 Yeh zaroori hai
+    
+    print("✅ Bot is running...")
+    print(" Bot Username: @" + bot.get_me().username)
+    print(" Advanced File Runner Bot Active")
+    print(f" Owner Chat ID: {OWNER_CHAT_ID}")
+    
+    while True:
+        try:
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        except Exception as e:
+            print(f"⚠️ Polling error: {e}")
+            time.sleep(5)
+            continue
