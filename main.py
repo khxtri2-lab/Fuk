@@ -8,12 +8,12 @@
 - Run/Stop/Logs/Status/Speed controls
 - LIVE STATUS + SPEED FIXED
 - Default file (fast hits) bhi available
+- 🔥 PROXY SUPPORT ADDED
 - Dev: @SunrakuV2 | Channel: @Anishpy | @VOUCH_R
 """
 import os
 from flask import Flask
 from threading import Thread
-import os
 import sys
 import time
 import random
@@ -28,29 +28,179 @@ import unicodedata
 from datetime import datetime, timedelta
 from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+
 # ============================================================
-#  ENVIRONMENT VARIABLE
+# 🔥 ENVIRONMENT VARIABLE
 # ============================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     print("❌ BOT_TOKEN environment variable not set!")
     sys.exit()
 bot = TeleBot(BOT_TOKEN)
+
 # ============================================================
-#  GLOBALS
+# 🔥 PROXY MANAGER
+# ============================================================
+PROXIES_FILE = "proxies.txt"
+_proxy_list = []
+_proxy_lock = threading.Lock()
+
+
+def load_proxies():
+    """Load proxies from proxies.txt or PROXIES env var."""
+    global _proxy_list
+    proxies = []
+    
+    # First: try environment variable
+    env_proxies = os.environ.get("PROXIES", "").strip()
+    if env_proxies:
+        for p in env_proxies.split(","):
+            p = p.strip()
+            if p:
+                proxies.append(p)
+    
+    # Second: try file
+    if not proxies:
+        try:
+            if os.path.exists(PROXIES_FILE):
+                with open(PROXIES_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        proxies.append(line)
+        except Exception as e:
+            print(f"❌ Proxy file error: {e}")
+    
+    with _proxy_lock:
+        _proxy_list = proxies
+    print(f"✅ Loaded {len(proxies)} proxies")
+
+
+def get_proxy():
+    """Get random proxy string."""
+    with _proxy_lock:
+        if not _proxy_list:
+            return None
+        return random.choice(_proxy_list)
+
+
+def normalize_proxy(p):
+    """Normalize proxy string to http://user:pass@ip:port format."""
+    if not p:
+        return None
+    p = p.strip()
+    if p.startswith(("http://", "https://", "socks5://")):
+        return p
+    if "@" in p:
+        return f"http://{p}"
+    if p.count(":") == 3:
+        # ip:port:user:pass
+        parts = p.split(":")
+        ip, port, user, pwd = parts[0], parts[1], parts[2], parts[3]
+        return f"http://{user}:{pwd}@{ip}:{port}"
+    if p.count(":") == 1:
+        return f"http://{p}"
+    return f"http://{p}"
+
+
+# Initial load
+load_proxies()
+
+
+# ============================================================
+# 🔥 PROXY INJECTOR — User ki file mein proxy code inject kare
+# ============================================================
+PROXY_INJECT_CODE = '''
+# 🔥 AUTO-INJECTED PROXY — DO NOT REMOVE
+import os as _os
+import random as _random
+try:
+    _PROXY_STR = _os.environ.get("HTTP_PROXY", "")
+    if _PROXY_STR:
+        _PROXY_DICT = {"http": _PROXY_STR, "https": _PROXY_STR}
+        try:
+            import requests as _req
+            _orig_get = _req.get
+            _orig_post = _req.post
+            _req.get = lambda *a, **kw: _orig_get(*a, proxies=kw.pop("proxies", _PROXY_DICT), **kw)
+            _req.post = lambda *a, **kw: _orig_post(*a, proxies=kw.pop("proxies", _PROXY_DICT), **kw)
+        except ImportError:
+            pass
+except Exception:
+    pass
+# END AUTO-INJECT
+'''
+
+
+def inject_proxy_into_file(file_path):
+    """Inject proxy env reading into user file at top."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        # Already injected?
+        if "AUTO-INJECTED PROXY" in content:
+            return True
+        
+        # Find first non-shebang, non-comment, non-docstring line
+        lines = content.split("\n")
+        insert_at = 0
+        in_docstring = False
+        docstring_char = None
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # Skip shebang
+            if stripped.startswith("#!"):
+                continue
+            # Skip single-line comments
+            if stripped.startswith("#"):
+                continue
+            # Skip docstrings
+            if not in_docstring:
+                if stripped.startswith('"""') or stripped.startswith("'''"):
+                    docstring_char = stripped[:3]
+                    if stripped.count(docstring_char) >= 2:
+                        # Single-line docstring
+                        continue
+                    in_docstring = True
+                    continue
+            else:
+                if docstring_char and docstring_char in stripped:
+                    in_docstring = False
+                continue
+            # Found first real code line
+            insert_at = i
+            break
+        
+        new_content = "\n".join(lines[:insert_at]) + "\n" + PROXY_INJECT_CODE + "\n" + "\n".join(lines[insert_at:])
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        
+        return True
+    except Exception as e:
+        print(f"⚠️ Proxy inject error: {e}")
+        return False
+
+
+# ============================================================
+# 🔥 GLOBALS
 # ============================================================
 user_sessions = {}
 lock = threading.Lock()
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-#  Owner Chat ID (Approval ke liye)
+
+# Owner Chat ID (Approval ke liye)
 OWNER_CHAT_ID = 8641613327
 
 # ============================================================
-#  USERS / CREDITS / ADMIN DATA
+# 🔥 USERS / CREDITS / ADMIN DATA
 # ============================================================
-# Data is kept in a small JSON file so credits and user IDs survive
-# a bot restart.  One credit activates 24 hours of access on first use.
 USER_DATA_FILE = "users_data.json"
 CREDIT_HOURS = 24
 user_data_lock = threading.Lock()
@@ -65,11 +215,13 @@ SMALL_CAPS_TRANSLATION = str.maketrans({
     "ᴜ": "u", "ᴠ": "v", "ᴡ": "w", "ʏ": "y", "ᴢ": "z",
 })
 
+
 def normalized_button_text(message):
     """Normalize premium-font button labels before matching them."""
     text = unicodedata.normalize("NFKC", message.text or "")
     text = text.translate(SMALL_CAPS_TRANSLATION)
     return " ".join(text.split()).casefold()
+
 
 def load_user_data():
     global user_data
@@ -80,6 +232,7 @@ def load_user_data():
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         user_data = {}
 
+
 def save_user_data():
     temp_file = f"{USER_DATA_FILE}.tmp"
     try:
@@ -88,6 +241,7 @@ def save_user_data():
         os.replace(temp_file, USER_DATA_FILE)
     except OSError as exc:
         print(f"⚠️ Could not save user data: {exc}")
+
 
 def ensure_user_record(chat_id, user=None):
     key = str(chat_id)
@@ -110,8 +264,10 @@ def ensure_user_record(chat_id, user=None):
         save_user_data()
         return record.copy()
 
+
 def is_admin(chat_id):
     return int(chat_id) == int(OWNER_CHAT_ID)
+
 
 def active_until_for(record):
     raw_value = record.get("active_until")
@@ -121,6 +277,7 @@ def active_until_for(record):
         return datetime.fromisoformat(raw_value)
     except (TypeError, ValueError):
         return None
+
 
 def access_status(chat_id):
     if is_admin(chat_id):
@@ -135,6 +292,7 @@ def access_status(chat_id):
     if record.get("credits", 0) > 0:
         return False, f"💳 {record['credits']} credit(s) available"
     return False, "❌ No active credit"
+
 
 def activate_credit(chat_id):
     """Use one credit only when the user first starts using the service."""
@@ -163,6 +321,7 @@ def activate_credit(chat_id):
         save_user_data()
         return True, f"✅ 1 credit activated for {CREDIT_HOURS} hours."
 
+
 def require_access(message, activate=True):
     chat_id = message.chat.id
     record = ensure_user_record(chat_id, getattr(message, "from_user", None))
@@ -186,6 +345,7 @@ def require_access(message, activate=True):
     )
     return False
 
+
 def credits_text(chat_id):
     if is_admin(chat_id):
         return "💳 **CREDITS**\n\n♾️ You are the owner — unlimited access."
@@ -203,9 +363,12 @@ def credits_text(chat_id):
         "the service, and it can be used anytime during that 24-hour window."
     )
 
+
 load_user_data()
+
+
 # ============================================================
-#  USER SESSION MANAGER (Fully Fixed)
+# 🔥 USER SESSION MANAGER
 # ============================================================
 class UserSession:
     def __init__(self, chat_id):
@@ -227,19 +390,23 @@ class UserSession:
         self.is_replaying_inputs = False
         self.files = []
         self.lock = threading.Lock()
+
     def add_log(self, msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.logs.append(f"[{timestamp}] {msg}")
         if len(self.logs) > 200:
             self.logs.pop(0)
+
     def get_logs(self, lines=25):
         return "\n".join(self.logs[-lines:]) if self.logs else "No logs yet."
+
     def get_runtime(self):
         if self.start_time:
             end_time = self.end_time or datetime.now()
             diff = end_time - self.start_time
             return str(diff).split('.')[0]
         return "N/A"
+
     def get_speed(self):
         if self.start_time:
             end_time = self.end_time or datetime.now()
@@ -248,6 +415,8 @@ class UserSession:
             self.speed = speed
             return speed
         return self.speed or 0
+
+
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 INPUT_PROMPT_RE = re.compile(
     r"(chat\s*id|user\s*name|username|password|token|email|phone|"
@@ -255,15 +424,19 @@ INPUT_PROMPT_RE = re.compile(
     r"confirm|yes/no|enter|input|➜|:\s*$)",
     re.IGNORECASE
 )
+
+
 def clean_console_prompt(text):
-    """Remove ANSI styling before sending a terminal prompt to Telegram."""
     text = ANSI_ESCAPE_RE.sub("", text)
     text = text.replace("\x00", "").strip()
     return text[-700:] if len(text) > 700 else text
+
+
 def looks_like_input_prompt(text):
     return bool(text and INPUT_PROMPT_RE.search(text))
+
+
 def ask_user_for_process_input(session, prompt):
-    """Forward an interactive child-process prompt to the user's Telegram chat."""
     prompt = clean_console_prompt(prompt)
     if not prompt or session.awaiting_input:
         return
@@ -271,7 +444,6 @@ def ask_user_for_process_input(session, prompt):
     session.input_prompt = prompt
     session.add_log(f" Waiting for input: {prompt}")
     try:
-        # Show the complete stored log before asking for the next value.
         full_log = session.get_logs(200)
         if not full_log:
             full_log = "No log output yet."
@@ -295,8 +467,9 @@ def ask_user_for_process_input(session, prompt):
     except Exception as e:
         session.awaiting_input = False
         session.add_log(f"❌ Could not request input: {e}")
+
+
 def add_file_to_session(session, file_path, file_name, approved=False):
-    """Add or replace a file record for this user's file list."""
     session.files = [
         entry for entry in session.files
         if entry.get("path") != file_path
@@ -306,8 +479,9 @@ def add_file_to_session(session, file_path, file_name, approved=False):
         "name": file_name,
         "approved": approved
     })
+
+
 def discover_user_files(session):
-    """Restore this user's uploaded files after a bot restart."""
     try:
         for file_name in os.listdir(UPLOAD_DIR):
             if not file_name.endswith(".py"):
@@ -321,6 +495,8 @@ def discover_user_files(session):
                 add_file_to_session(session, file_path, file_name, approved=False)
     except OSError:
         pass
+
+
 def get_file_entry(session, index):
     if index < 0 or index >= len(session.files):
         return None
@@ -328,6 +504,8 @@ def get_file_entry(session, index):
     if not os.path.exists(entry.get("path", "")):
         return None
     return entry
+
+
 def file_manager_markup(session):
     markup = InlineKeyboardMarkup(row_width=2)
     for index, entry in enumerate(session.files):
@@ -347,6 +525,8 @@ def file_manager_markup(session):
             )
         )
     return markup
+
+
 def file_manager_text(session):
     existing = [
         entry for entry in session.files
@@ -368,8 +548,10 @@ def file_manager_text(session):
     lines.append("")
     lines.append("Selected file can be run with RUN FILE.")
     return "\n".join(lines)
+
+
 # ============================================================
-#  APPROVAL SYSTEM
+# 🔥 APPROVAL SYSTEM
 # ============================================================
 def send_approval_request(user_chat_id, file_name, file_path):
     msg = f"""
@@ -395,6 +577,8 @@ def send_approval_request(user_chat_id, file_name, file_path):
     except Exception as e:
         print(f"Approval send error: {e}")
         return False
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("approve_"))
 def approve_file(call):
     data = call.data.split("_")
@@ -425,6 +609,8 @@ def approve_file(call):
     except:
         pass
     bot.answer_callback_query(call.id, "✅ Approved!")
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("reject_"))
 def reject_file(call):
     user_chat_id = int(call.data.split("_")[1])
@@ -451,8 +637,10 @@ def reject_file(call):
     except:
         pass
     bot.answer_callback_query(call.id, "❌ Rejected!")
+
+
 # ============================================================
-#  BOT COMMANDS & BUTTONS
+# 🔥 BOT MENUS
 # ============================================================
 def admin_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -465,11 +653,13 @@ def admin_menu():
     )
     return markup
 
+
 def admin_only(message):
     if not is_admin(message.chat.id):
         bot.reply_to(message, "❌ **Admin-only button.**", parse_mode="Markdown")
         return False
     return True
+
 
 def admin_panel_message(message):
     if not admin_only(message):
@@ -485,19 +675,23 @@ def admin_panel_message(message):
         parse_mode="Markdown",
     )
 
+
 @bot.message_handler(commands=["admin"])
 def admin_command(message):
     admin_panel_message(message)
 
+
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("admin panel"))
 def admin_panel_button(message):
     admin_panel_message(message)
+
 
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("main menu"))
 def back_to_main_menu(message):
     if not admin_only(message):
         return
     bot.reply_to(message, "✅ **Main menu opened.**", reply_markup=main_menu(message.chat.id), parse_mode="Markdown")
+
 
 def credit_change_prompt(message, operation):
     if not admin_only(message):
@@ -512,13 +706,16 @@ def credit_change_prompt(message, operation):
     )
     bot.register_next_step_handler(prompt, process_credit_change, operation)
 
+
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("add credits"))
 def add_credits_button(message):
     credit_change_prompt(message, "add")
 
+
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("remove credits"))
 def remove_credits_button(message):
     credit_change_prompt(message, "remove")
+
 
 def process_credit_change(message, operation):
     if not is_admin(message.chat.id):
@@ -529,11 +726,7 @@ def process_credit_change(message, operation):
         return
     parts = raw_text.split()
     if len(parts) != 2:
-        bot.reply_to(
-            message,
-            "❌ Format galat. Example: `123456789 3`",
-            parse_mode="Markdown",
-        )
+        bot.reply_to(message, "❌ Format galat. Example: `123456789 3`", parse_mode="Markdown")
         return
     try:
         target_id = int(parts[0])
@@ -568,6 +761,7 @@ def process_credit_change(message, operation):
     except Exception as exc:
         print(f"Credit notification error: {exc}")
 
+
 def users_report():
     lines = ["👥 **REGISTERED USERS**", ""]
     now = datetime.now()
@@ -590,6 +784,7 @@ def users_report():
         lines.append("No users have started the bot yet.")
     return "\n".join(lines)
 
+
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("users"))
 def show_users(message):
     if not admin_only(message):
@@ -597,6 +792,7 @@ def show_users(message):
     with user_data_lock:
         report = users_report()
     bot.reply_to(message, report, reply_markup=admin_menu())
+
 
 def broadcast_prompt(message):
     if not admin_only(message):
@@ -611,13 +807,16 @@ def broadcast_prompt(message):
     )
     bot.register_next_step_handler(prompt, prepare_broadcast)
 
+
 @bot.message_handler(commands=["broadcast"])
 def broadcast_command(message):
     broadcast_prompt(message)
 
+
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("broadcast"))
 def broadcast_button(message):
     broadcast_prompt(message)
+
 
 def prepare_broadcast(message):
     if not is_admin(message.chat.id):
@@ -642,6 +841,7 @@ def prepare_broadcast(message):
         "Send karna hai?",
         reply_markup=markup,
     )
+
 
 @bot.callback_query_handler(func=lambda call: call.data in ["broadcast_confirm", "broadcast_cancel"])
 def broadcast_callback(call):
@@ -678,10 +878,9 @@ def broadcast_callback(call):
     )
     bot.answer_callback_query(call.id, "Broadcast sent")
 
+
 def main_menu(chat_id=None):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    # Telegram does not support custom button colors, so colored emoji
-    # markers are used to make every button visually distinct.
     btn1 = KeyboardButton("🟦 𝑼ᴘʟᴏᴀᴅ 𝑭ɪʟᴇ")
     btn2 = KeyboardButton("🟢 𝑹ᴜɴ 𝑭ɪʟᴇ")
     btn3 = KeyboardButton("⏹️ 𝑺ᴛᴏᴘ 𝑭ɪʟᴇ")
@@ -699,11 +898,13 @@ def main_menu(chat_id=None):
         markup.add(KeyboardButton("🛠 𝑨ᴅᴍɪɴ 𝑷ᴀɴᴇʟ"))
     return markup
 
+
 @bot.message_handler(commands=["credits"])
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("my credits"))
 def show_credits(message):
     ensure_user_record(message.chat.id, getattr(message, "from_user", None))
     bot.reply_to(message, credits_text(message.chat.id), parse_mode="Markdown")
+
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -725,12 +926,15 @@ def send_welcome(message):
  𝑰𝒏𝒔𝒕𝒂𝒍𝒍 𝒑𝒊𝒑 𝒑𝒂𝒄𝒌𝒂𝒈𝒆𝒔 𝒇𝒐𝒓 𝒚𝒐𝒖𝒓 𝒇𝒊𝒍𝒆 (𝒐𝒓 𝒖𝒔𝒆 /pip)
  𝑴𝒂𝒏𝒂𝒈𝒆 𝒚𝒐𝒖𝒓 𝒖𝒑𝒍𝒐𝒂𝒅𝒆𝒅 𝒇𝒊𝒍𝒆𝒔
  𝑺𝒆𝒏𝒅 𝒊𝒏𝒑𝒖𝒕 𝒕𝒐 𝒂 𝒓𝒖𝒏𝒏𝒊𝒏𝒈 𝒇𝒊𝒍𝒆 (𝒐𝒓 𝒖𝒔𝒆 /input)
+ 🔥 𝑷𝒓𝒐𝒙𝒚: 𝑨𝒖𝒕𝒐-𝒊𝒏𝒋𝒆𝒄𝒕𝒆𝒅
  𝑫𝒆𝒗: @𝑺𝒖𝒏𝒓𝒂𝒌𝒖𝑽2
  𝑪𝒉𝒂𝒏𝒏𝒆𝒍: @𝑨𝒏𝒊𝒔𝒉𝒑𝒚 | @𝑽𝑶𝑼𝑪𝑯_𝑹
 """
     bot.reply_to(message, welcome_msg, reply_markup=main_menu(chat_id))
+
+
 # ============================================================
-#  UPLOAD FILE
+# 🔥 UPLOAD FILE
 # ============================================================
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("upload file"))
 def upload_file(message):
@@ -744,8 +948,10 @@ def upload_file(message):
         parse_mode='Markdown'
     )
     bot.register_next_step_handler(msg1, handle_file_upload)
+
+
 # ============================================================
-#  MY FILES
+# 🔥 MY FILES
 # ============================================================
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("my files"))
 def show_my_files(message):
@@ -760,6 +966,8 @@ def show_my_files(message):
         file_manager_text(session),
         reply_markup=file_manager_markup(session)
     )
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("select_file_"))
 def select_user_file(call):
     try:
@@ -797,6 +1005,8 @@ def select_user_file(call):
         call.message.message_id,
         reply_markup=file_manager_markup(session)
     )
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("delete_file_"))
 def delete_user_file(call):
     try:
@@ -852,17 +1062,19 @@ def delete_user_file(call):
         )
     except OSError as e:
         bot.answer_callback_query(call.id, f"❌ Delete failed: {e}")
+
+
 # ============================================================
-#  INSTALL PIP PACKAGE FOR USER FILE
+# 🔥 INSTALL PIP
 # ============================================================
 PACKAGE_SPEC_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9_,.-]+\])?"
     r"(?:(?:==|!=|~=|>=|<=|>|<)[A-Za-z0-9.*+!_-]+)?$"
 )
+
+
 @bot.message_handler(commands=['pip'])
-@bot.message_handler(
-    func=lambda msg: normalized_button_text(msg).endswith("install pip")
-)
+@bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("install pip"))
 def install_pip_button(message):
     if not require_access(message):
         return
@@ -889,6 +1101,8 @@ def install_pip_button(message):
         parse_mode='Markdown'
     )
     bot.register_next_step_handler(prompt, install_pip_packages)
+
+
 def install_pip_packages(message):
     chat_id = message.chat.id
     with lock:
@@ -929,8 +1143,6 @@ def install_pip_packages(message):
                 .lower()
                 for package in packages
             }
-            # Repair the common python-telegram-bot dependency mismatch
-            # without changing the normal install behavior for other packages.
             dependency_repair = bool(
                 package_names.intersection(
                     {"anyio", "httpx", "httpcore", "python-telegram-bot"}
@@ -969,6 +1181,8 @@ def install_pip_packages(message):
         except Exception as e:
             bot.send_message(message.chat.id, f"❌ Pip error: {e}")
     threading.Thread(target=pip_worker, daemon=True).start()
+
+
 @bot.message_handler(content_types=['document'])
 def handle_file_upload(message):
     chat_id = message.chat.id
@@ -1014,18 +1228,18 @@ def handle_file_upload(message):
             bot.reply_to(message, f"⚠️ **File uploaded but approval failed!**\nPlease contact @SunrakuV2 manually.", parse_mode='Markdown')
     except Exception as e:
         bot.reply_to(message, f"❌ **Upload failed:** {str(e)}", parse_mode='Markdown')
+
+
 # ============================================================
-#  RUN FILE
+# 🔥 RUN FILE (with PROXY INJECT)
 # ============================================================
 def replay_saved_inputs(session, saved_inputs):
-    """Replay the values collected during the previous run."""
     if not saved_inputs or not session.process or session.process.stdin is None:
         return
 
     def replay_worker():
         session.is_replaying_inputs = True
         try:
-            # Give the child process time to start and reach its first input().
             time.sleep(0.4)
             for index, value in enumerate(saved_inputs, start=1):
                 if not session.is_running or session.process.poll() is not None:
@@ -1042,6 +1256,7 @@ def replay_saved_inputs(session, saved_inputs):
             session.is_replaying_inputs = False
 
     threading.Thread(target=replay_worker, daemon=True).start()
+
 
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("restart file"))
 def restart_file(message):
@@ -1068,6 +1283,7 @@ def restart_file(message):
     bot.reply_to(message, notice, parse_mode="Markdown")
     run_file(message, replay_inputs=True)
 
+
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("run file"))
 def run_file(message, replay_inputs=False):
     if not require_access(message):
@@ -1092,14 +1308,30 @@ def run_file(message, replay_inputs=False):
         session.input_history = []
     session.last_exit_code = None
     try:
+        # 🔥 INJECT PROXY INTO USER FILE
+        inject_proxy_into_file(session.file_path)
+        
+        # 🔥 PREPARE ENV WITH PROXY
+        env = os.environ.copy()
+        proxy = get_proxy()
+        if proxy:
+            proxy = normalize_proxy(proxy)
+            env["HTTP_PROXY"] = proxy
+            env["HTTPS_PROXY"] = proxy
+            env["http_proxy"] = proxy
+            env["https_proxy"] = proxy
+            session.add_log(f"🌐 Proxy active: {proxy[:40]}...")
+        else:
+            session.add_log("⚠️ No proxy available — running without proxy")
+        
         session.process = subprocess.Popen(
-            # -u makes Python child scripts flush output immediately.
             [sys.executable, "-u", session.file_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
             text=True,
-            bufsize=1
+            bufsize=1,
+            env=env  # 🔥 Pass env with proxy
         )
         session.is_running = True
         session.start_time = datetime.now()
@@ -1108,9 +1340,8 @@ def run_file(message, replay_inputs=False):
         session.speed = 0
         session.is_replaying_inputs = bool(saved_inputs)
         session.add_log(f" File started: {os.path.basename(session.file_path)}")
+        
         def read_logs():
-            # Read one byte at a time so prompts from input("...") are
-            # visible even when they do not end with a newline.
             stdout = session.process.stdout
             partial_output = ""
             prompt_sent = False
@@ -1126,7 +1357,6 @@ def run_file(message, replay_inputs=False):
                         text = chunk.decode("utf-8", errors="replace")
                         partial_output += text
                         prompt_sent = False
-                        # Store complete output lines as logs.
                         while "\n" in partial_output:
                             line, partial_output = partial_output.split("\n", 1)
                             line = line.rstrip("\r")
@@ -1134,8 +1364,6 @@ def run_file(message, replay_inputs=False):
                                 session.add_log(line.strip())
                                 session.total_checks += 1
                     else:
-                        # input("...") usually leaves its prompt in the
-                        # partial buffer because there is no newline.
                         prompt = clean_console_prompt(partial_output)
                         if (
                             prompt
@@ -1166,13 +1394,16 @@ def run_file(message, replay_inputs=False):
                 session.add_log("✅ File finished")
             elif return_code is not None:
                 session.add_log(f"⚠️ File exited with code {return_code}")
+        
         threading.Thread(target=read_logs, daemon=True).start()
         replay_saved_inputs(session, saved_inputs)
-        bot.reply_to(message, f"✅ **File started!**\n `{os.path.basename(session.file_path)}`\n\n Click **VIEW LOGS** to see output.\n Click **LIVE STATUS** to check progress.", parse_mode='Markdown')
+        bot.reply_to(message, f"✅ **File started!**\n `{os.path.basename(session.file_path)}`\n\n🌐 **Proxy:** Active\n Click **VIEW LOGS** to see output.\n Click **LIVE STATUS** to check progress.", parse_mode='Markdown')
     except Exception as e:
         session.is_running = False
         session.add_log(f"❌ Run error: {str(e)}")
         bot.reply_to(message, f"❌ **Error:** {str(e)}", parse_mode='Markdown')
+
+
 # ============================================================
 # ⏹ STOP FILE
 # ============================================================
@@ -1188,7 +1419,6 @@ def stop_file(message):
         bot.reply_to(message, "⚠️ **No file is running!**", parse_mode='Markdown')
         return
     try:
-        # Set this before terminate so the status changes immediately.
         session.is_running = False
         session.process.terminate()
         time.sleep(1)
@@ -1199,8 +1429,10 @@ def stop_file(message):
         bot.reply_to(message, "⏹ **File stopped successfully!**", parse_mode='Markdown')
     except Exception as e:
         bot.reply_to(message, f"❌ **Stop error:** {str(e)}", parse_mode='Markdown')
+
+
 # ============================================================
-#  VIEW LOGS
+# 🔥 VIEW LOGS
 # ============================================================
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("view logs"))
 def view_logs(message):
@@ -1215,8 +1447,10 @@ def view_logs(message):
         bot.reply_to(message, " **No logs yet.**\n\nRun a file to see output.", parse_mode='Markdown')
         return
     bot.reply_to(message, f" **Recent Logs:**\n```\n{logs}\n```", parse_mode='Markdown')
+
+
 # ============================================================
-#  LIVE STATUS (Fixed — Proper Working)
+# 🔥 LIVE STATUS
 # ============================================================
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("live status"))
 def show_live_status(message):
@@ -1226,7 +1460,6 @@ def show_live_status(message):
             bot.reply_to(message, "❌ **No session found!**\n\n Please /start first.", parse_mode='Markdown')
             return
         session = user_sessions[chat_id]
-    # Catch a child process that ended between two status button presses.
     if session.process and session.process.poll() is not None and session.is_running:
         session.is_running = False
         session.end_time = session.end_time or datetime.now()
@@ -1237,11 +1470,13 @@ def show_live_status(message):
     runtime = session.get_runtime()
     speed = session.get_speed()
     input_state = " Waiting for your reply" if session.awaiting_input else "No"
+    proxy_state = "✅ Active" if _proxy_list else "❌ None"
     status_msg = f"""
  **LIVE STATUS**
  **File:** `{file_name}`
 {status_icon} **Status:** `{status_text}`
 ✅ **Approval:** `{approved_text}`
+🌐 **Proxy:** `{proxy_state}`
 ⏱ **Runtime:** `{runtime}`
  **Checks:** `{session.total_checks}`
  **Speed:** `{speed}` checks/min
@@ -1251,8 +1486,10 @@ def show_live_status(message):
  @SunrakuV2 |  @Anishpy | @VOUCH_R
 """
     bot.reply_to(message, status_msg, parse_mode='Markdown')
+
+
 # ============================================================
-# ⚡ SPEED (Fixed — Proper Working)
+# ⚡ SPEED
 # ============================================================
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("speed"))
 def show_speed(message):
@@ -1282,8 +1519,10 @@ def show_speed(message):
  @SunrakuV2 |  @Anishpy | @VOUCH_R
 """
     bot.reply_to(message, speed_msg, parse_mode='Markdown')
+
+
 # ============================================================
-#  PROCESS INPUT
+# 🔥 PROCESS INPUT
 # ============================================================
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("send input"))
 @bot.message_handler(commands=['input'])
@@ -1310,6 +1549,8 @@ def request_process_input(message):
     session.awaiting_input = True
     session.input_prompt = "Manual input requested"
     bot.register_next_step_handler(prompt, send_process_input)
+
+
 def send_process_input(message):
     chat_id = message.chat.id
     with lock:
@@ -1338,8 +1579,10 @@ def send_process_input(message):
         session.end_time = session.end_time or datetime.now()
         session.add_log(f"❌ Input error: {e}")
         bot.reply_to(message, "❌ **File closed its input channel or has stopped.**", parse_mode='Markdown')
+
+
 # ============================================================
-#  DEV
+# 🔥 DEV
 # ============================================================
 @bot.message_handler(func=lambda msg: normalized_button_text(msg).endswith("dev"))
 def show_dev(message):
@@ -1349,32 +1592,23 @@ def show_dev(message):
     btn3 = InlineKeyboardButton("✅ @VOUCH_R", url="https://t.me/VOUCH_R")
     markup.add(btn1, btn2, btn3)
     bot.reply_to(message, " **Developer & Channels:**", reply_markup=markup, parse_mode='Markdown')
+
+
 # ============================================================
-#  START BOT
-# ============================================================
-print("✅ Bot is running...")
-print(" Bot Username: @" + bot.get_me().username)
-print(" Advanced File Runner Bot Active")
-print(f" Owner Chat ID: {OWNER_CHAT_ID}")
-while True:
-    try:
-        bot.infinity_polling(timeout=10, long_polling_timeout=5)
-    except Exception as e:
-        print(f"⚠️ Polling error: {e}")
-        time.sleep(5)
-        continue
-# ============================================================
-#  FLASK KEEP-ALIVE (Render Port Fix)
+# 🔥 FLASK KEEP-ALIVE (Render Port Fix)
 # ============================================================
 app = Flask('')
+
 
 @app.route('/')
 def home():
     return "✅ Bot is alive!"
 
+
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 def keep_alive():
     t = Thread(target=run_flask)
@@ -1382,13 +1616,15 @@ def keep_alive():
     t.start()
     print("✅ Flask Keep-Alive Started on port", os.environ.get("PORT", 10000))
 
+
 # ============================================================
-#  START BOT
+# 🔥 START BOT
 # ============================================================
 if __name__ == "__main__":
-    keep_alive()  # 🔥 Yeh zaroori hai
+    keep_alive()
     
     print("✅ Bot is running...")
+    print(f"✅ Loaded {len(_proxy_list)} proxies")
     print(" Bot Username: @" + bot.get_me().username)
     print(" Advanced File Runner Bot Active")
     print(f" Owner Chat ID: {OWNER_CHAT_ID}")
