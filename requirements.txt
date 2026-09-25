@@ -7,3 +7,6 @@ colorama
 urllib3
 certifi
 psutil
+pyTelegramBotAPI
+requests
+Flask
